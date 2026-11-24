@@ -1,0 +1,17 @@
+# Only the project files are tracked
+/*
+!/.github
+!/cmake
+!/data
+!/src
+!.gitignore
+!buildspec.json
+!CMakeLists.txt
+!CMakePresets.json
+!LICENSE
+!README.md
+!README.it.md
+
+*.lock.json
+.DS_Store
+/cmake/.CMakeBuildNumber
