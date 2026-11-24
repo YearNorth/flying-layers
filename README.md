@@ -47,6 +47,7 @@ How layers are matched:
 
 - two layers are the same layer when they show the same source. If a source appears more than once in a scene, the first copy matches the first, the second matches the second, and so on;
 - while flying, layers use the stacking order of the destination scene. Leaving layers stay just above the layer that was below them;
+- a source that is not a scene (a camera, an NDI or capture source, a source sent by another plugin) counts as a scene with one layer, placed as OBS shows it. A full-frame camera can fly into a picture-in-picture and back; two different single sources go out and come in with the chosen effects;
 - groups and nested scenes fly as a single block;
 - hidden layers do not take part.
 

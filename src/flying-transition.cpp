@@ -92,6 +92,10 @@ struct Settings {
 struct PlannedLayer {
 	obs_sceneitem_t *a = nullptr;
 	obs_sceneitem_t *b = nullptr;
+	// When a side of the transition is a single source instead of a
+	// scene, that source is one full-frame layer (referenced here).
+	obs_source_t *wholeA = nullptr;
+	obs_source_t *wholeB = nullptr;
 	gs_texrender_t *content = nullptr; // the layer's own texture, kept for the whole transition
 };
 
@@ -117,6 +121,24 @@ bool collectItem(obs_scene_t *, obs_sceneitem_t *item, void *param)
 {
 	obs_sceneitem_addref(item);
 	static_cast<std::vector<obs_sceneitem_t *> *>(param)->push_back(item);
+	return true;
+}
+
+// How a transition shows a single source: its size, scaling and alignment.
+struct Frame {
+	float width = 0.0f;
+	float height = 0.0f;
+	obs_transition_scale_type scaleType = OBS_TRANSITION_SCALE_MAX_ONLY;
+	uint32_t alignment = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;
+};
+
+bool readWholeSource(obs_source_t *source, const Frame &frame, LayerState &out)
+{
+	if (!source || !fl::fitLayout(obs_source_get_width(source), obs_source_get_height(source), frame.width,
+				      frame.height, frame.scaleType, frame.alignment, out.layout))
+		return false;
+	out.source = source;
+	out.nestedScene = false;
 	return true;
 }
 
@@ -285,18 +307,15 @@ public:
 		obs_source_t *sourceB = obs_transition_get_source(self_, OBS_TRANSITION_SOURCE_B);
 		const float t = obs_transition_get_time(self_);
 
+		// Scenes give their layers; any other source is one layer.
 		obs_scene_t *sceneA = obs_scene_from_source(sourceA);
 		obs_scene_t *sceneB = obs_scene_from_source(sourceB);
 		const bool transitioning = sourceB && t < 1.0f && ready();
 
 		const bool previousSrgb = gs_set_linear_srgb(true);
 
-		if (transitioning && sceneB && (sceneA || !sourceA)) {
+		if (transitioning) {
 			renderFlying(sourceA, sourceB, sceneA, sceneB, t);
-		} else if (sourceB && t < 1.0f && ready()) {
-			// Not two scenes (the preview in the properties dialog,
-			// for example): plain crossfade.
-			obs_transition_video_render2(self_, crossfadeCallback, nullptr);
 		} else {
 			// Idle, or the transition has just reached the end: let
 			// OBS draw the scene and finish the transition.
@@ -321,6 +340,8 @@ private:
 		for (PlannedLayer &layer : plan_) {
 			obs_sceneitem_release(layer.a);
 			obs_sceneitem_release(layer.b);
+			obs_source_release(layer.wholeA);
+			obs_source_release(layer.wholeB);
 			if (layer.content)
 				gs_texrender_destroy(layer.content);
 		}
@@ -337,34 +358,47 @@ private:
 	{
 		clearPlan();
 
+		// Each side is the items of a scene, or a single source as one
+		// layer (a null item in the list stands for it).
 		std::vector<obs_sceneitem_t *> itemsA;
 		std::vector<obs_sceneitem_t *> itemsB;
 		if (sceneA)
 			obs_scene_enum_items(sceneA, collectItem, &itemsA);
-		obs_scene_enum_items(sceneB, collectItem, &itemsB);
+		else if (sourceA)
+			itemsA.push_back(nullptr);
+		if (sceneB)
+			obs_scene_enum_items(sceneB, collectItem, &itemsB);
+		else
+			itemsB.push_back(nullptr);
 
 		// Layers are the same when they show the same source. Names are
 		// unique in OBS and survive the scene duplication of Studio Mode.
-		auto keys = [](const std::vector<obs_sceneitem_t *> &items) {
+		auto keys = [](const std::vector<obs_sceneitem_t *> &items, obs_source_t *whole) {
 			std::vector<const char *> out;
 			out.reserve(items.size());
 			for (obs_sceneitem_t *item : items)
-				out.push_back(obs_source_get_name(obs_sceneitem_get_source(item)));
+				out.push_back(obs_source_get_name(item ? obs_sceneitem_get_source(item) : whole));
 			return out;
 		};
 
-		const std::vector<fl::Pair> order = fl::planLayers(keys(itemsA), keys(itemsB));
+		const std::vector<fl::Pair> order = fl::planLayers(keys(itemsA, sourceA), keys(itemsB, sourceB));
 
 		plan_.reserve(order.size());
 		for (const fl::Pair &pair : order) {
 			PlannedLayer layer;
 			if (pair.a >= 0) {
 				layer.a = itemsA[(size_t)pair.a];
-				obs_sceneitem_addref(layer.a);
+				if (layer.a)
+					obs_sceneitem_addref(layer.a);
+				else
+					layer.wholeA = obs_source_get_ref(sourceA);
 			}
 			if (pair.b >= 0) {
 				layer.b = itemsB[(size_t)pair.b];
-				obs_sceneitem_addref(layer.b);
+				if (layer.b)
+					obs_sceneitem_addref(layer.b);
+				else
+					layer.wholeB = obs_source_get_ref(sourceB);
 			}
 			plan_.push_back(layer);
 		}
@@ -381,14 +415,17 @@ private:
 	// ---- Timing -------------------------------------------------------
 
 	// Reads every layer for this frame and gives it its time window.
-	void prepareFrame(const Settings &settings)
+	void prepareFrame(const Settings &settings, const Frame &view)
 	{
 		frame_.clear();
 		for (size_t i = 0; i < plan_.size(); ++i) {
 			FrameLayer layer;
 			layer.plan = i;
-			const bool hasA = readLayer(plan_[i].a, layer.a);
-			const bool hasB = readLayer(plan_[i].b, layer.b);
+			const PlannedLayer &planned = plan_[i];
+			const bool hasA = planned.wholeA ? readWholeSource(planned.wholeA, view, layer.a)
+							 : readLayer(planned.a, layer.a);
+			const bool hasB = planned.wholeB ? readWholeSource(planned.wholeB, view, layer.b)
+							 : readLayer(planned.b, layer.b);
 			if (hasA && hasB)
 				layer.role = Role::Fly;
 			else if (hasB)
@@ -491,11 +528,24 @@ private:
 			settings = settings_;
 		}
 
-		const float canvasW = (float)obs_source_get_width(sourceB);
-		const float canvasH = (float)obs_source_get_height(sourceB);
+		// The transition's own size (the canvas for the main output, or
+		// the largest of the two sources when nobody set one, as in OBS).
+		Frame view;
+		uint32_t w = 0, h = 0;
+		obs_transition_get_size(self_, &w, &h);
+		if (!w || !h) {
+			w = obs_source_get_width(self_);
+			h = obs_source_get_height(self_);
+		}
+		view.width = (float)w;
+		view.height = (float)h;
+		view.scaleType = obs_transition_get_scale_type(self_);
+		view.alignment = obs_transition_get_alignment(self_);
+		const float canvasW = view.width;
+		const float canvasH = view.height;
 		const float shutterOpen = settings.motionBlur ? frameStep(t) * settings.shutter : 0.0f;
 
-		prepareFrame(settings);
+		prepareFrame(settings, view);
 
 		gs_blend_state_push();
 		gs_reset_blend_state();
@@ -783,22 +833,6 @@ private:
 		gs_enable_framebuffer_srgb(previousOut);
 		gs_blend_state_pop();
 		return true;
-	}
-
-	// Fallback when one side is not a scene: crossfade, the two
-	// premultiplied images summed with their weights.
-	static void crossfadeCallback(void *data, gs_texture_t *a, gs_texture_t *b, float t, uint32_t cx, uint32_t cy)
-	{
-		auto *self = static_cast<FlyingTransition *>(data);
-
-		gs_blend_state_push();
-		gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
-		self->setUv(0.0f, 0.0f, 1.0f, 1.0f);
-		if (a)
-			self->drawTexture(a, 1.0f - t, cx, cy);
-		if (b)
-			self->drawTexture(b, t, cx, cy);
-		gs_blend_state_pop();
 	}
 
 	struct Sample {

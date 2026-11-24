@@ -364,6 +364,44 @@ bool computeLayout(const obs_transform_info &info, const obs_sceneitem_crop &cro
 	return std::isfinite(out.cx) && std::isfinite(out.cy) && std::isfinite(out.sx) && std::isfinite(out.sy);
 }
 
+bool fitLayout(uint32_t srcW, uint32_t srcH, float trW, float trH, obs_transition_scale_type scaleType,
+	       uint32_t alignment, Layout &out)
+{
+	if (!srcW || !srcH || trW <= 0.0f || trH <= 0.0f)
+		return false;
+
+	const float sourceW = (float)srcW;
+	const float sourceH = (float)srcH;
+	float sx = 1.0f, sy = 1.0f;
+
+	if (scaleType == OBS_TRANSITION_SCALE_MAX_ONLY && (sourceW > trW || sourceH > trH))
+		scaleType = OBS_TRANSITION_SCALE_ASPECT;
+
+	if (scaleType == OBS_TRANSITION_SCALE_ASPECT) {
+		const bool useWidth = trW / trH < sourceW / sourceH;
+		sx = sy = useWidth ? trW / sourceW : trH / sourceH;
+	} else if (scaleType == OBS_TRANSITION_SCALE_STRETCH) {
+		sx = trW / sourceW;
+		sy = trH / sourceH;
+	}
+
+	const float scaledW = sourceW * sx;
+	const float scaledH = sourceH * sy;
+	vec2 pos;
+	vec2_zero(&pos);
+	addAlignment(pos, alignment, (int)(trW - scaledW), (int)(trH - scaledH));
+
+	out.srcW = out.contentW = sourceW;
+	out.srcH = out.contentH = sourceH;
+	out.cropL = out.cropT = 0.0f;
+	out.sx = sx;
+	out.sy = sy;
+	out.rot = 0.0f;
+	out.cx = pos.x + scaledW * 0.5f;
+	out.cy = pos.y + scaledH * 0.5f;
+	return true;
+}
+
 Layout interpolate(const Layout &a, const Layout &b, float k)
 {
 	if (k == 0.0f)

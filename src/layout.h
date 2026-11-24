@@ -96,6 +96,12 @@ struct Layout {
 bool computeLayout(const obs_transform_info &info, const obs_sceneitem_crop &crop, uint32_t srcW, uint32_t srcH,
 		   Layout &out);
 
+// Placement OBS gives to a single source (not a scene) shown by a
+// transition of size trW x trH: the same scaling and alignment as
+// recalculate_transition_matrix() in libobs/obs-source-transition.c.
+bool fitLayout(uint32_t srcW, uint32_t srcH, float trW, float trH, obs_transition_scale_type scaleType,
+	       uint32_t alignment, Layout &out);
+
 // Interpolates two placements. Rotation takes the shortest way round. k can
 // go a little outside 0..1 (overshooting curves): crop stays within the
 // source and scale does not change sign unless the two placements differ in
