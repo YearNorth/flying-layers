@@ -14,8 +14,8 @@ the Free Software Foundation; either version 2 of the License, or
 
 #pragma once
 
-#include <obs.h>
 #include <graphics/matrix4.h>
+#include <obs.h>
 
 #include <cstdint>
 #include <vector>
@@ -28,10 +28,49 @@ enum class Easing : int {
 	EaseOut,
 	EaseInOut,
 	Smooth,
+	BackOut,   // overshoots the destination a little, then settles
+	BackInOut, // pulls back a little, overshoots, then settles
+	ElasticOut,
+	Custom, // cubic Bezier, as CSS cubic-bezier(x1, y1, x2, y2)
 };
 
-// Maps linear progress t (0..1) to eased progress (0..1).
-float applyEasing(Easing easing, float t);
+// Control points of a custom curve. x1 and x2 are kept within 0..1.
+struct Bezier {
+	float x1 = 0.25f;
+	float y1 = 0.1f;
+	float x2 = 0.25f;
+	float y2 = 1.0f;
+};
+
+// Maps linear progress t (0..1) to eased progress. The result is 0 at t = 0
+// and 1 at t = 1, and can go outside 0..1 in between (back, elastic, some
+// custom curves).
+float applyEasing(Easing easing, float t, const Bezier &bezier = Bezier());
+
+// ---- Timing ----------------------------------------------------------------
+
+// Part of the transition (0..1) during which something happens.
+struct Window {
+	float start = 0.0f;
+	float length = 1.0f;
+};
+
+struct Timing {
+	bool sequenced = false;    // exits, then flights, then entries
+	float exitPortion = 1.0f;  // share of the transition used by layers going out
+	float enterPortion = 1.0f; // share used by layers coming in
+	float cascade = 0.0f;      // 0 = all together, up to 0.9 = one after the other
+};
+
+// Windows of the layers going out, flying and coming in.
+void groupWindows(const Timing &timing, Window &exit, Window &fly, Window &enter);
+
+// Window of member `index` of `count` inside a group window, with the
+// cascade delay between members.
+Window cascadeWindow(const Window &group, float cascade, int index, int count);
+
+// Progress (0..1) of transition time t inside a window.
+float localProgress(const Window &window, float t);
 
 // Placement of one layer in scene pixels, in a form that interpolates well:
 // the centre of the visible content, its scale, rotation and crop.
@@ -57,7 +96,10 @@ struct Layout {
 bool computeLayout(const obs_transform_info &info, const obs_sceneitem_crop &crop, uint32_t srcW, uint32_t srcH,
 		   Layout &out);
 
-// Interpolates two placements. Rotation takes the shortest way round.
+// Interpolates two placements. Rotation takes the shortest way round. k can
+// go a little outside 0..1 (overshooting curves): crop stays within the
+// source and scale does not change sign unless the two placements differ in
+// sign.
 Layout interpolate(const Layout &a, const Layout &b, float k);
 
 // Matrix mapping visible content pixels (0..contentW, 0..contentH) to scene
@@ -71,6 +113,9 @@ struct Rect {
 // Axis-aligned box of the layer on screen, rotation included.
 Rect layoutBounds(const Layout &layout);
 
+// Corners of the layer on screen.
+void layoutCorners(const Layout &layout, vec2 corners[4]);
+
 enum class Edge : int {
 	Auto = 0, // nearest edge of the canvas
 	Left,
@@ -79,8 +124,17 @@ enum class Edge : int {
 	Bottom,
 };
 
+// `edge`, with Auto replaced by the canvas edge nearest to the layer.
+Edge resolveEdge(const Layout &layout, Edge edge, float canvasW, float canvasH);
+
 // Offset that moves the layer just outside the canvas through `edge`.
 void offscreenOffset(const Layout &layout, Edge edge, float canvasW, float canvasH, float &dx, float &dy);
+
+// Hides the share `hidden` (0..1) of the layer on the side opposite to
+// `edge`, as a wipe that starts from `edge` does. The visible part stays in
+// place. `edge` is in screen terms (Left is the left of the layer as seen,
+// flips included) and must not be Auto.
+void wipe(Layout &layout, Edge edge, float hidden);
 
 // One entry of the draw list: index of the layer in scene A and in scene B,
 // or -1 when the layer is only in one of them.

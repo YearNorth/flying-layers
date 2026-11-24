@@ -171,9 +171,43 @@ void calculateBounds(const obs_transform_info &info, vec2 &origin, vec2 &scale, 
 
 } // namespace
 
-float applyEasing(Easing easing, float t)
+namespace {
+
+// Cubic Bezier from (0,0) to (1,1) with control points (x1,y1), (x2,y2):
+// finds the curve parameter whose x is t, then returns its y.
+float cubicBezier(const Bezier &bezier, float t)
+{
+	const float x1 = std::clamp(bezier.x1, 0.0f, 1.0f);
+	const float x2 = std::clamp(bezier.x2, 0.0f, 1.0f);
+	auto coord = [](float p1, float p2, float u) {
+		const float v = 1.0f - u;
+		return 3.0f * v * v * u * p1 + 3.0f * v * u * u * p2 + u * u * u;
+	};
+
+	// x(u) is monotonic because x1, x2 are within 0..1: bisection is
+	// robust and 24 steps are well below float precision.
+	float lo = 0.0f, hi = 1.0f, u = t;
+	for (int i = 0; i < 24; ++i) {
+		u = 0.5f * (lo + hi);
+		if (coord(x1, x2, u) < t)
+			lo = u;
+		else
+			hi = u;
+	}
+	return coord(bezier.y1, bezier.y2, u);
+}
+
+} // namespace
+
+float applyEasing(Easing easing, float t, const Bezier &bezier)
 {
 	t = std::clamp(t, 0.0f, 1.0f);
+	if (t <= 0.0f)
+		return 0.0f;
+	if (t >= 1.0f)
+		return 1.0f;
+
+	constexpr float back = 1.70158f;
 
 	switch (easing) {
 	case Easing::EaseIn:
@@ -191,10 +225,74 @@ float applyEasing(Easing easing, float t)
 		}
 	case Easing::Smooth:
 		return 0.5f - 0.5f * cosf(kPi * t);
+	case Easing::BackOut: {
+		const float u = t - 1.0f;
+		return 1.0f + (back + 1.0f) * u * u * u + back * u * u;
+	}
+	case Easing::BackInOut: {
+		const float c = back * 1.525f;
+		if (t < 0.5f) {
+			const float u = 2.0f * t;
+			return u * u * ((c + 1.0f) * u - c) / 2.0f;
+		}
+		const float u = 2.0f * t - 2.0f;
+		return (u * u * ((c + 1.0f) * u + c) + 2.0f) / 2.0f;
+	}
+	case Easing::ElasticOut:
+		return powf(2.0f, -10.0f * t) * sinf((t * 10.0f - 0.75f) * (2.0f * kPi / 3.0f)) + 1.0f;
+	case Easing::Custom:
+		return cubicBezier(bezier, t);
 	case Easing::Linear:
 	default:
 		return t;
 	}
+}
+
+// ---- Timing
+// -------------------------------------------------------------------
+
+void groupWindows(const Timing &timing, Window &exit, Window &fly, Window &enter)
+{
+	float exitPart = std::clamp(timing.exitPortion, 0.05f, 1.0f);
+	float enterPart = std::clamp(timing.enterPortion, 0.05f, 1.0f);
+
+	if (!timing.sequenced) {
+		// All start together; exits end early, entries start late.
+		exit = Window{0.0f, exitPart};
+		fly = Window{0.0f, 1.0f};
+		enter = Window{1.0f - enterPart, enterPart};
+		return;
+	}
+
+	// One after the other, leaving at least 10 % for the flight.
+	const float sum = exitPart + enterPart;
+	if (sum > 0.9f) {
+		exitPart *= 0.9f / sum;
+		enterPart *= 0.9f / sum;
+	}
+	exit = Window{0.0f, exitPart};
+	fly = Window{exitPart, 1.0f - exitPart - enterPart};
+	enter = Window{1.0f - enterPart, enterPart};
+}
+
+Window cascadeWindow(const Window &group, float cascade, int index, int count)
+{
+	cascade = std::clamp(cascade, 0.0f, 0.9f);
+	if (count <= 1 || cascade <= 0.0f)
+		return group;
+
+	// Each member runs for (1 - cascade) of the group window; starts are
+	// spread evenly over the rest.
+	const float length = group.length * (1.0f - cascade);
+	const float step = group.length * cascade / (float)(count - 1);
+	return Window{group.start + step * (float)index, length};
+}
+
+float localProgress(const Window &window, float t)
+{
+	if (window.length <= 0.0f)
+		return t >= window.start ? 1.0f : 0.0f;
+	return std::clamp((t - window.start) / window.length, 0.0f, 1.0f);
 }
 
 bool Layout::hasCrop() const
@@ -264,9 +362,9 @@ bool computeLayout(const obs_transform_info &info, const obs_sceneitem_crop &cro
 
 Layout interpolate(const Layout &a, const Layout &b, float k)
 {
-	if (k <= 0.0f)
+	if (k == 0.0f)
 		return a;
-	if (k >= 1.0f)
+	if (k == 1.0f)
 		return b;
 
 	float turn = fmodf(b.rot - a.rot, 360.0f);
@@ -275,15 +373,25 @@ Layout interpolate(const Layout &a, const Layout &b, float k)
 	else if (turn < -180.0f)
 		turn += 360.0f;
 
+	// Overshooting curves must not turn a layer inside out.
+	auto scale = [k](float from, float to) {
+		const float v = lerp(from, to, k);
+		if (from > 0.0f && to > 0.0f)
+			return std::max(v, 1e-4f);
+		if (from < 0.0f && to < 0.0f)
+			return std::min(v, -1e-4f);
+		return v;
+	};
+
 	Layout out;
 	out.srcW = b.srcW;
 	out.srcH = b.srcH;
-	out.cropL = lerp(a.cropL, b.cropL, k);
-	out.cropT = lerp(a.cropT, b.cropT, k);
-	out.contentW = lerp(a.contentW, b.contentW, k);
-	out.contentH = lerp(a.contentH, b.contentH, k);
-	out.sx = lerp(a.sx, b.sx, k);
-	out.sy = lerp(a.sy, b.sy, k);
+	out.cropL = std::clamp(lerp(a.cropL, b.cropL, k), 0.0f, out.srcW - 1.0f);
+	out.cropT = std::clamp(lerp(a.cropT, b.cropT, k), 0.0f, out.srcH - 1.0f);
+	out.contentW = std::clamp(lerp(a.contentW, b.contentW, k), 1.0f, out.srcW - out.cropL);
+	out.contentH = std::clamp(lerp(a.contentH, b.contentH, k), 1.0f, out.srcH - out.cropT);
+	out.sx = scale(a.sx, b.sx);
+	out.sy = scale(a.sy, b.sy);
 	out.rot = a.rot + turn * k;
 	out.cx = lerp(a.cx, b.cx, k);
 	out.cy = lerp(a.cy, b.cy, k);
@@ -299,74 +407,116 @@ void layoutMatrix(const Layout &layout, matrix4 &out)
 	matrix4_translate3f(&out, &out, layout.cx, layout.cy, 0.0f);
 }
 
-Rect layoutBounds(const Layout &layout)
+void layoutCorners(const Layout &layout, vec2 corners[4])
 {
 	matrix4 m;
 	layoutMatrix(layout, m);
 
-	const float xs[2] = {0.0f, layout.contentW};
-	const float ys[2] = {0.0f, layout.contentH};
+	const float xs[4] = {0.0f, layout.contentW, layout.contentW, 0.0f};
+	const float ys[4] = {0.0f, 0.0f, layout.contentH, layout.contentH};
+	for (int i = 0; i < 4; ++i) {
+		vec3 corner;
+		vec3_set(&corner, xs[i], ys[i], 0.0f);
+		vec3 p;
+		vec3_transform(&p, &corner, &m);
+		vec2_set(&corners[i], p.x, p.y);
+	}
+}
+
+Rect layoutBounds(const Layout &layout)
+{
+	vec2 corners[4];
+	layoutCorners(layout, corners);
 
 	Rect r{INFINITY, INFINITY, -INFINITY, -INFINITY};
-	for (float x : xs) {
-		for (float y : ys) {
-			vec3 corner;
-			vec3_set(&corner, x, y, 0.0f);
-			vec3 p;
-			vec3_transform(&p, &corner, &m);
-			r.minX = std::min(r.minX, p.x);
-			r.minY = std::min(r.minY, p.y);
-			r.maxX = std::max(r.maxX, p.x);
-			r.maxY = std::max(r.maxY, p.y);
-		}
+	for (const vec2 &p : corners) {
+		r.minX = std::min(r.minX, p.x);
+		r.minY = std::min(r.minY, p.y);
+		r.maxX = std::max(r.maxX, p.x);
+		r.maxY = std::max(r.maxY, p.y);
 	}
 	return r;
+}
+
+Edge resolveEdge(const Layout &layout, Edge edge, float canvasW, float canvasH)
+{
+	if (edge != Edge::Auto)
+		return edge;
+
+	// Nearest edge to the layer's centre, so it moves the short way.
+	const float left = layout.cx;
+	const float right = canvasW - layout.cx;
+	const float top = layout.cy;
+	const float bottom = canvasH - layout.cy;
+	const float nearest = std::min(std::min(left, right), std::min(top, bottom));
+	if (nearest == left)
+		return Edge::Left;
+	if (nearest == right)
+		return Edge::Right;
+	if (nearest == top)
+		return Edge::Top;
+	return Edge::Bottom;
 }
 
 void offscreenOffset(const Layout &layout, Edge edge, float canvasW, float canvasH, float &dx, float &dy)
 {
 	const Rect r = layoutBounds(layout);
 
-	// Distance each way until the layer is completely off the canvas.
-	const float toLeft = r.maxX;
-	const float toRight = canvasW - r.minX;
-	const float toTop = r.maxY;
-	const float toBottom = canvasH - r.minY;
-
-	if (edge == Edge::Auto) {
-		// Nearest edge to the layer's centre, so it leaves the short way.
-		const float left = layout.cx;
-		const float right = canvasW - layout.cx;
-		const float top = layout.cy;
-		const float bottom = canvasH - layout.cy;
-		const float nearest = std::min(std::min(left, right), std::min(top, bottom));
-		if (nearest == left)
-			edge = Edge::Left;
-		else if (nearest == right)
-			edge = Edge::Right;
-		else if (nearest == top)
-			edge = Edge::Top;
-		else
-			edge = Edge::Bottom;
-	}
-
 	dx = 0.0f;
 	dy = 0.0f;
-	switch (edge) {
+	switch (resolveEdge(layout, edge, canvasW, canvasH)) {
 	case Edge::Left:
-		dx = -std::max(toLeft, 0.0f);
+		dx = -std::max(r.maxX, 0.0f);
 		break;
 	case Edge::Right:
-		dx = std::max(toRight, 0.0f);
+		dx = std::max(canvasW - r.minX, 0.0f);
 		break;
 	case Edge::Top:
-		dy = -std::max(toTop, 0.0f);
+		dy = -std::max(r.maxY, 0.0f);
 		break;
 	case Edge::Bottom:
 	default:
-		dy = std::max(toBottom, 0.0f);
+		dy = std::max(canvasH - r.minY, 0.0f);
 		break;
 	}
+}
+
+void wipe(Layout &layout, Edge edge, float hidden)
+{
+	hidden = std::clamp(hidden, 0.0f, 1.0f);
+	const bool horizontal = edge == Edge::Left || edge == Edge::Right;
+
+	// The hidden side is opposite to the edge the wipe starts from, as
+	// seen on screen; with a flipped layer that is the other source side.
+	const bool hideScreenRightOrBottom = edge == Edge::Left || edge == Edge::Top;
+	const float sign = horizontal ? layout.sx : layout.sy;
+	const bool hideSourceEnd = hideScreenRightOrBottom == (sign >= 0.0f);
+
+	const float size = horizontal ? layout.contentW : layout.contentH;
+	const float cut = std::min(size * hidden, size - 0.01f);
+
+	// Centre of the visible part moves by half the cut, in source pixels,
+	// along the layer's own axis.
+	const float shift = hideSourceEnd ? -cut * 0.5f : cut * 0.5f;
+	if (horizontal) {
+		if (!hideSourceEnd)
+			layout.cropL += cut;
+		layout.contentW -= cut;
+	} else {
+		if (!hideSourceEnd)
+			layout.cropT += cut;
+		layout.contentH -= cut;
+	}
+
+	matrix4 rotation;
+	matrix4_identity(&rotation);
+	matrix4_rotate_aa4f(&rotation, &rotation, 0.0f, 0.0f, 1.0f, RAD(layout.rot));
+	vec3 local;
+	vec3_set(&local, horizontal ? shift * layout.sx : 0.0f, horizontal ? 0.0f : shift * layout.sy, 0.0f);
+	vec3 moved;
+	vec3_transform(&moved, &local, &rotation);
+	layout.cx += moved.x;
+	layout.cy += moved.y;
 }
 
 std::vector<Pair> planLayers(const std::vector<const char *> &a, const std::vector<const char *> &b)

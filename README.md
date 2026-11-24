@@ -5,7 +5,7 @@
 A scene transition for OBS Studio that makes layers fly from one scene to the next:
 
 - **layers in both scenes** move and resize from where they are in the first scene to where they are in the second, with position, scale, bounding box, rotation and crop all animated;
-- **layers that leave** (only in the first scene) go out with a fade, zoom, slide to an edge or cut;
+- **layers that leave** (only in the first scene) go out with a fade, zoom, slide to an edge, wipe or cut;
 - **layers that arrive** (only in the second scene) come in with the same effects;
 - audio crossfades as with the standard Fade transition.
 
@@ -32,9 +32,14 @@ The macOS package is not notarized. If macOS blocks it, open **System Settings �
 
 ## Usage
 
-1. In the **Scene Transitions** dock, click **+** and choose **Flying Layers**.
-2. Open its **Properties** (gear icon) to choose the easing curve, the effects for layers coming in and going out, the slide edge, and whether zoom and slide also fade.
-3. Set the duration as for any other transition.
+In the **Scene Transitions** dock, click **+** and choose **Flying Layers**. Set the duration as for any other transition, and open its **Properties** (gear icon) for the options:
+
+| Group | Options |
+| --- | --- |
+| Motion curve | Linear, ease in, ease out, ease in-out, smooth, back (overshoots and settles), back in-out, elastic, or a custom Bézier curve (as CSS `cubic-bezier`) |
+| Timing | **All together** or **in sequence** (layers go out, then fly, then come in). Share of the duration for layers going out and coming in. **Cascade**: the layers start one after another, in stacking order or by position on screen |
+| Coming in and going out | Fade, zoom, slide, wipe or cut, chosen separately for entries and exits. Edge for slides and wipes (nearest, left, right, top, bottom). Optional fade during zoom and slide |
+| Motion blur | Blurs layers along their movement, like a camera shutter. The shutter angle sets the amount (180° is the film look, 360° the full frame). A still T-bar gives a sharp picture |
 
 It works wherever OBS transitions work: direct scene switching, Studio Mode with the T-bar, hotkeys, Stream Deck and obs-websocket.
 
