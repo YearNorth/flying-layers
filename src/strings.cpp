@@ -1,5 +1,5 @@
 /*
-Flying Layers for OBS Studio
+FlyingLayers for OBS Studio
 Copyright (C) 2026 YearNorth
 
 This program is free software; you can redistribute it and/or modify
@@ -17,7 +17,7 @@ the Free Software Foundation; either version 2 of the License, or
 namespace fl {
 
 const BuiltInString kBuiltInStrings[] = {
-	{"FlyingLayers.Title", "Flying Layers"},
+	{"FlyingLayers.Title", "FlyingLayers"},
 	{"FlyingLayers.Group.Curve", "Curve"},
 	{"FlyingLayers.Group.Timing", "Timing"},
 	{"FlyingLayers.Group.Appear", "In and out"},

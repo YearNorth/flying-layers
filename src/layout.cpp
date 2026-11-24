@@ -1,5 +1,5 @@
 /*
-Flying Layers for OBS Studio
+FlyingLayers for OBS Studio
 Copyright (C) 2026 YearNorth
 
 addAlignment(), croppedSize(), cropToBounds(), calculateBounds() and the

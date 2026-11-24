@@ -1,5 +1,5 @@
 /*
-Flying Layers for OBS Studio
+FlyingLayers for OBS Studio
 Copyright (C) 2026 YearNorth
 
 This program is free software; you can redistribute it and/or modify

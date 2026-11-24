@@ -1,4 +1,4 @@
-# Flying Layers for OBS Studio
+# FlyingLayers for OBS Studio
 
 [Italiano](README.it.md)
 
@@ -32,7 +32,7 @@ The macOS package is not notarized. If macOS blocks it, open **System Settings â
 
 ## Usage
 
-In the **Scene Transitions** dock, click **+** and choose **Flying Layers**. Set the duration as for any other transition, and open its **Properties** (gear icon) for the options:
+In the **Scene Transitions** dock, click **+** and choose **FlyingLayers**. Set the duration as for any other transition, and open its **Properties** (gear icon) for the options:
 
 | Group | Options |
 | --- | --- |
