@@ -1,3 +1,18 @@
+/*
+Flying Layers for OBS Studio
+Copyright (C) 2026 YearNorth
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+*/
+
+#pragma once
+
+// The shader is compiled into the plugin, so it works even when only the
+// plugin binary is installed.
+static const char *const kFlyingLayersEffect = R"EFFECT(
 // Draws a premultiplied-alpha texture with an extra opacity, optionally
 // showing only part of it (uv_offset, uv_scale) for crops.
 // The vertex shader and sampler follow libobs/data/default.effect of
@@ -40,3 +55,4 @@ technique Draw
 		pixel_shader  = PSDraw(vert_in);
 	}
 }
+)EFFECT";

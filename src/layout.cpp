@@ -279,6 +279,19 @@ void groupWindows(const Timing &timing, Window &exit, Window &fly, Window &enter
 	enter = Window{1.0f - enterPart, enterPart};
 }
 
+Window cascadeWindow(const Window &group, float cascade, int index, int count)
+{
+	cascade = std::clamp(cascade, 0.0f, 0.9f);
+	if (count <= 1 || cascade <= 0.0f)
+		return group;
+
+	// Each member runs for (1 - cascade) of the group window; starts are
+	// spread evenly over the rest.
+	const float length = group.length * (1.0f - cascade);
+	const float step = group.length * cascade / (float)(count - 1);
+	return Window{group.start + step * (float)index, length};
+}
+
 float localProgress(const Window &window, float t)
 {
 	if (window.length <= 0.0f)

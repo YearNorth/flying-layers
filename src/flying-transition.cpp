@@ -10,7 +10,9 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "flying-transition.h"
 
+#include "effect.h"
 #include "layout.h"
+#include "strings.h"
 
 #include <obs-module.h>
 #include <plugin-support.h>
@@ -33,6 +35,8 @@ constexpr const char *kBezierY1 = "bezier_y1";
 constexpr const char *kBezierX2 = "bezier_x2";
 constexpr const char *kBezierY2 = "bezier_y2";
 constexpr const char *kTimingMode = "timing_mode";
+constexpr const char *kCascade = "cascade";
+constexpr const char *kCascadeOrder = "cascade_order";
 constexpr const char *kExitPortion = "exit_portion";
 constexpr const char *kEnterPortion = "enter_portion";
 constexpr const char *kEnterEffect = "enter_effect";
@@ -52,6 +56,16 @@ enum class Appear : int {
 	Wipe,
 };
 
+// Order in which layers start when the cascade is on.
+enum class CascadeOrder : int {
+	StackUp = 0, // bottom layer first
+	StackDown,   // top layer first
+	LeftToRight,
+	RightToLeft,
+	TopToBottom,
+	BottomToTop,
+};
+
 enum class Role {
 	Fly,
 	Enter,
@@ -62,6 +76,7 @@ struct Settings {
 	fl::Easing easing = fl::Easing::EaseInOut;
 	fl::Bezier bezier;
 	fl::Timing timing;
+	CascadeOrder cascadeOrder = CascadeOrder::StackUp;
 	Appear enter = Appear::Fade;
 	Appear exit = Appear::Fade;
 	fl::Edge edge = fl::Edge::Auto;
@@ -203,20 +218,21 @@ class FlyingTransition {
 public:
 	FlyingTransition(obs_data_t *settings, obs_source_t *self) : self_(self)
 	{
-		char *file = obs_module_file("flying-layers.effect");
+		char *errors = nullptr;
 		obs_enter_graphics();
-		effect_ = gs_effect_create_from_file(file, nullptr);
+		effect_ = gs_effect_create(kFlyingLayersEffect, "flying-layers.effect", &errors);
 		obs_leave_graphics();
-		bfree(file);
 
 		if (effect_) {
 			imageParam_ = gs_effect_get_param_by_name(effect_, "image");
 			opacityParam_ = gs_effect_get_param_by_name(effect_, "opacity");
 			uvOffsetParam_ = gs_effect_get_param_by_name(effect_, "uv_offset");
 			uvScaleParam_ = gs_effect_get_param_by_name(effect_, "uv_scale");
-		} else {
-			obs_log(LOG_ERROR, "could not load flying-layers.effect");
 		}
+		if (!ready())
+			obs_log(LOG_ERROR, "could not compile the shader, falling back to a cut: %s",
+				errors ? errors : "unknown error");
+		bfree(errors);
 
 		update(settings);
 	}
@@ -232,7 +248,9 @@ public:
 		obs_leave_graphics();
 	}
 
-	bool valid() const { return effect_ && imageParam_ && opacityParam_ && uvOffsetParam_ && uvScaleParam_; }
+	// False only if the shader failed to compile: the transition then
+	// works as a cut instead of failing to be created.
+	bool ready() const { return effect_ && imageParam_ && opacityParam_ && uvOffsetParam_ && uvScaleParam_; }
 	obs_source_t *source() const { return self_; }
 
 	void update(obs_data_t *data)
@@ -246,6 +264,8 @@ public:
 		s.timing.sequenced = obs_data_get_int(data, kTimingMode) == 1;
 		s.timing.exitPortion = (float)obs_data_get_int(data, kExitPortion) / 100.0f;
 		s.timing.enterPortion = (float)obs_data_get_int(data, kEnterPortion) / 100.0f;
+		s.timing.cascade = (float)obs_data_get_int(data, kCascade) / 100.0f;
+		s.cascadeOrder = (CascadeOrder)obs_data_get_int(data, kCascadeOrder);
 		s.enter = (Appear)obs_data_get_int(data, kEnterEffect);
 		s.exit = (Appear)obs_data_get_int(data, kExitEffect);
 		s.edge = (fl::Edge)obs_data_get_int(data, kSlideEdge);
@@ -267,13 +287,13 @@ public:
 
 		obs_scene_t *sceneA = obs_scene_from_source(sourceA);
 		obs_scene_t *sceneB = obs_scene_from_source(sourceB);
-		const bool transitioning = sourceB && t < 1.0f;
+		const bool transitioning = sourceB && t < 1.0f && ready();
 
 		const bool previousSrgb = gs_set_linear_srgb(true);
 
 		if (transitioning && sceneB && (sceneA || !sourceA)) {
 			renderFlying(sourceA, sourceB, sceneA, sceneB, t);
-		} else if (transitioning) {
+		} else if (sourceB && t < 1.0f && ready()) {
 			// Not two scenes (the preview in the properties dialog,
 			// for example): plain crossfade.
 			obs_transition_video_render2(self_, crossfadeCallback, nullptr);
@@ -363,28 +383,76 @@ private:
 	// Reads every layer for this frame and gives it its time window.
 	void prepareFrame(const Settings &settings)
 	{
-		fl::Window exit, fly, enter;
-		fl::groupWindows(settings.timing, exit, fly, enter);
-
 		frame_.clear();
 		for (size_t i = 0; i < plan_.size(); ++i) {
 			FrameLayer layer;
 			layer.plan = i;
 			const bool hasA = readLayer(plan_[i].a, layer.a);
 			const bool hasB = readLayer(plan_[i].b, layer.b);
-			if (hasA && hasB) {
+			if (hasA && hasB)
 				layer.role = Role::Fly;
-				layer.window = fly;
-			} else if (hasB) {
+			else if (hasB)
 				layer.role = Role::Enter;
-				layer.window = enter;
-			} else if (hasA) {
+			else if (hasA)
 				layer.role = Role::Exit;
-				layer.window = exit;
-			} else {
+			else
 				continue;
-			}
 			frame_.push_back(layer);
+		}
+
+		fl::Window exit, fly, enter;
+		fl::groupWindows(settings.timing, exit, fly, enter);
+
+		// Layers of each group start one after another when the cascade is
+		// on. The order depends only on the two scenes, so it does not
+		// change from one frame to the next.
+		for (Role role : {Role::Exit, Role::Fly, Role::Enter}) {
+			order_.clear();
+			for (size_t i = 0; i < frame_.size(); ++i)
+				if (frame_[i].role == role)
+					order_.push_back(i);
+
+			sortForCascade(settings.cascadeOrder);
+
+			const fl::Window &group = role == Role::Exit ? exit : role == Role::Fly ? fly : enter;
+			for (size_t rank = 0; rank < order_.size(); ++rank)
+				frame_[order_[rank]].window = fl::cascadeWindow(group, settings.timing.cascade,
+										(int)rank, (int)order_.size());
+		}
+	}
+
+	void sortForCascade(CascadeOrder order)
+	{
+		// Position where the layer is in its scene (the destination for
+		// layers flying or coming in, the start for layers going out).
+		auto centre = [this](size_t i, bool x) {
+			const fl::Layout &l = frame_[i].shown().layout;
+			return x ? l.cx : l.cy;
+		};
+		auto by = [&](bool x, bool ascending) {
+			std::stable_sort(order_.begin(), order_.end(), [&](size_t p, size_t q) {
+				return ascending ? centre(p, x) < centre(q, x) : centre(p, x) > centre(q, x);
+			});
+		};
+		switch (order) {
+		case CascadeOrder::StackDown:
+			std::reverse(order_.begin(), order_.end());
+			break;
+		case CascadeOrder::LeftToRight:
+			by(true, true);
+			break;
+		case CascadeOrder::RightToLeft:
+			by(true, false);
+			break;
+		case CascadeOrder::TopToBottom:
+			by(false, true);
+			break;
+		case CascadeOrder::BottomToTop:
+			by(false, false);
+			break;
+		case CascadeOrder::StackUp:
+		default:
+			break; // the plan is already bottom to top
 		}
 	}
 
@@ -755,6 +823,7 @@ private:
 	obs_source_t *planA_ = nullptr; // identity only, not referenced
 	obs_source_t *planB_ = nullptr;
 	std::vector<FrameLayer> frame_;
+	std::vector<size_t> order_;
 	std::vector<Sample> samples_;
 	gs_texrender_t *accumulator_ = nullptr;
 	uint64_t lastFrameTime_ = 0;
@@ -770,9 +839,9 @@ void addList(obs_properties_t *props, const char *key, const char *label,
 	     std::initializer_list<std::pair<const char *, int>> items)
 {
 	obs_property_t *list =
-		obs_properties_add_list(props, key, obs_module_text(label), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+		obs_properties_add_list(props, key, fl::text(label), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	for (const auto &item : items)
-		obs_property_list_add_int(list, obs_module_text(item.first), item.second);
+		obs_property_list_add_int(list, fl::text(item.first), item.second);
 }
 
 void addAppearList(obs_properties_t *props, const char *key, const char *label)
@@ -785,27 +854,36 @@ void addAppearList(obs_properties_t *props, const char *key, const char *label)
 		 {"FlyingLayers.Appear.Cut", (int)Appear::Cut}});
 }
 
-void setVisible(obs_properties_t *props, const char *key, bool visible)
+// Shows or hides an option. Returns true if that changed anything.
+bool setVisible(obs_properties_t *props, const char *key, bool visible)
 {
-	if (obs_property_t *p = obs_properties_get(props, key))
-		obs_property_set_visible(p, visible);
+	obs_property_t *p = obs_properties_get(props, key);
+	if (!p || obs_property_visible(p) == visible)
+		return false;
+	obs_property_set_visible(p, visible);
+	return true;
 }
 
-// Shows only the options that apply to the current choices.
+// Shows only the options that apply to the current choices. Returns true
+// only when an option appears or disappears: returning true makes OBS
+// rebuild the whole panel, which would interrupt a slider being dragged.
 bool refreshVisibility(obs_properties_t *props, obs_property_t *, obs_data_t *settings)
 {
+	bool changed = false;
 	const bool custom = obs_data_get_int(settings, kEasing) == (int)fl::Easing::Custom;
 	for (const char *key : {kBezierX1, kBezierY1, kBezierX2, kBezierY2})
-		setVisible(props, key, custom);
+		changed |= setVisible(props, key, custom);
+
+	changed |= setVisible(props, kCascadeOrder, obs_data_get_int(settings, kCascade) > 0);
 
 	auto uses = [settings](Appear effect) {
 		return obs_data_get_int(settings, kEnterEffect) == (int)effect ||
 		       obs_data_get_int(settings, kExitEffect) == (int)effect;
 	};
-	setVisible(props, kSlideEdge, uses(Appear::Slide) || uses(Appear::Wipe));
-	setVisible(props, kMotionFade, uses(Appear::Zoom) || uses(Appear::Slide));
-	setVisible(props, kShutterAngle, obs_data_get_bool(settings, kMotionBlur));
-	return true;
+	changed |= setVisible(props, kSlideEdge, uses(Appear::Slide) || uses(Appear::Wipe));
+	changed |= setVisible(props, kMotionFade, uses(Appear::Zoom) || uses(Appear::Slide));
+	changed |= setVisible(props, kShutterAngle, obs_data_get_bool(settings, kMotionBlur));
+	return changed;
 }
 
 obs_properties_t *FlyingTransition::properties()
@@ -824,24 +902,33 @@ obs_properties_t *FlyingTransition::properties()
 		 {"FlyingLayers.Easing.BackInOut", (int)fl::Easing::BackInOut},
 		 {"FlyingLayers.Easing.ElasticOut", (int)fl::Easing::ElasticOut},
 		 {"FlyingLayers.Easing.Custom", (int)fl::Easing::Custom}});
-	obs_properties_add_float_slider(curve, kBezierX1, obs_module_text("FlyingLayers.Bezier.X1"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(curve, kBezierY1, obs_module_text("FlyingLayers.Bezier.Y1"), -1.0, 2.0, 0.01);
-	obs_properties_add_float_slider(curve, kBezierX2, obs_module_text("FlyingLayers.Bezier.X2"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(curve, kBezierY2, obs_module_text("FlyingLayers.Bezier.Y2"), -1.0, 2.0, 0.01);
-	obs_properties_add_group(props, "group_curve", obs_module_text("FlyingLayers.Group.Curve"), OBS_GROUP_NORMAL,
-				 curve);
+	obs_properties_add_float_slider(curve, kBezierX1, fl::text("FlyingLayers.Bezier.X1"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(curve, kBezierY1, fl::text("FlyingLayers.Bezier.Y1"), -1.0, 2.0, 0.01);
+	obs_properties_add_float_slider(curve, kBezierX2, fl::text("FlyingLayers.Bezier.X2"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(curve, kBezierY2, fl::text("FlyingLayers.Bezier.Y2"), -1.0, 2.0, 0.01);
+	obs_properties_add_group(props, "group_curve", fl::text("FlyingLayers.Group.Curve"), OBS_GROUP_NORMAL, curve);
 
 	// Timing
 	obs_properties_t *timing = obs_properties_create();
 	addList(timing, kTimingMode, "FlyingLayers.TimingMode",
 		{{"FlyingLayers.TimingMode.Together", 0}, {"FlyingLayers.TimingMode.Sequenced", 1}});
-	obs_property_t *exitPortion = obs_properties_add_int_slider(
-		timing, kExitPortion, obs_module_text("FlyingLayers.ExitPortion"), 5, 100, 5);
+	obs_property_t *exitPortion =
+		obs_properties_add_int_slider(timing, kExitPortion, fl::text("FlyingLayers.ExitPortion"), 5, 100, 5);
 	obs_property_int_set_suffix(exitPortion, " %");
-	obs_property_t *enterPortion = obs_properties_add_int_slider(
-		timing, kEnterPortion, obs_module_text("FlyingLayers.EnterPortion"), 5, 100, 5);
+	obs_property_t *enterPortion =
+		obs_properties_add_int_slider(timing, kEnterPortion, fl::text("FlyingLayers.EnterPortion"), 5, 100, 5);
 	obs_property_int_set_suffix(enterPortion, " %");
-	obs_properties_add_group(props, "group_timing", obs_module_text("FlyingLayers.Group.Timing"), OBS_GROUP_NORMAL,
+	obs_property_t *cascade =
+		obs_properties_add_int_slider(timing, kCascade, fl::text("FlyingLayers.Cascade"), 0, 90, 5);
+	obs_property_int_set_suffix(cascade, " %");
+	addList(timing, kCascadeOrder, "FlyingLayers.CascadeOrder",
+		{{"FlyingLayers.CascadeOrder.StackUp", (int)CascadeOrder::StackUp},
+		 {"FlyingLayers.CascadeOrder.StackDown", (int)CascadeOrder::StackDown},
+		 {"FlyingLayers.CascadeOrder.LeftToRight", (int)CascadeOrder::LeftToRight},
+		 {"FlyingLayers.CascadeOrder.RightToLeft", (int)CascadeOrder::RightToLeft},
+		 {"FlyingLayers.CascadeOrder.TopToBottom", (int)CascadeOrder::TopToBottom},
+		 {"FlyingLayers.CascadeOrder.BottomToTop", (int)CascadeOrder::BottomToTop}});
+	obs_properties_add_group(props, "group_timing", fl::text("FlyingLayers.Group.Timing"), OBS_GROUP_NORMAL,
 				 timing);
 
 	// Layers coming in and going out
@@ -854,20 +941,19 @@ obs_properties_t *FlyingTransition::properties()
 		 {"FlyingLayers.Edge.Right", (int)fl::Edge::Right},
 		 {"FlyingLayers.Edge.Top", (int)fl::Edge::Top},
 		 {"FlyingLayers.Edge.Bottom", (int)fl::Edge::Bottom}});
-	obs_properties_add_bool(appearing, kMotionFade, obs_module_text("FlyingLayers.MotionFade"));
-	obs_properties_add_group(props, "group_appear", obs_module_text("FlyingLayers.Group.Appear"), OBS_GROUP_NORMAL,
+	obs_properties_add_bool(appearing, kMotionFade, fl::text("FlyingLayers.MotionFade"));
+	obs_properties_add_group(props, "group_appear", fl::text("FlyingLayers.Group.Appear"), OBS_GROUP_NORMAL,
 				 appearing);
 
 	// Motion blur
 	obs_properties_t *blur = obs_properties_create();
-	obs_properties_add_bool(blur, kMotionBlur, obs_module_text("FlyingLayers.MotionBlur"));
-	obs_property_t *shutter = obs_properties_add_int_slider(
-		blur, kShutterAngle, obs_module_text("FlyingLayers.ShutterAngle"), 30, 360, 15);
+	obs_properties_add_bool(blur, kMotionBlur, fl::text("FlyingLayers.MotionBlur"));
+	obs_property_t *shutter =
+		obs_properties_add_int_slider(blur, kShutterAngle, fl::text("FlyingLayers.ShutterAngle"), 30, 360, 15);
 	obs_property_int_set_suffix(shutter, "°");
-	obs_properties_add_group(props, "group_blur", obs_module_text("FlyingLayers.Group.Blur"), OBS_GROUP_NORMAL,
-				 blur);
+	obs_properties_add_group(props, "group_blur", fl::text("FlyingLayers.Group.Blur"), OBS_GROUP_NORMAL, blur);
 
-	for (const char *key : {kEasing, kEnterEffect, kExitEffect, kMotionBlur})
+	for (const char *key : {kEasing, kCascade, kEnterEffect, kExitEffect, kMotionBlur})
 		obs_property_set_modified_callback(obs_properties_get(props, key), refreshVisibility);
 
 	return props;
@@ -883,6 +969,8 @@ void FlyingTransition::defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, kTimingMode, 0);
 	obs_data_set_default_int(settings, kExitPortion, 100);
 	obs_data_set_default_int(settings, kEnterPortion, 100);
+	obs_data_set_default_int(settings, kCascade, 0);
+	obs_data_set_default_int(settings, kCascadeOrder, (int)CascadeOrder::StackUp);
 	obs_data_set_default_int(settings, kEnterEffect, (int)Appear::Fade);
 	obs_data_set_default_int(settings, kExitEffect, (int)Appear::Fade);
 	obs_data_set_default_int(settings, kSlideEdge, (int)fl::Edge::Auto);
@@ -895,17 +983,12 @@ void FlyingTransition::defaults(obs_data_t *settings)
 
 const char *ftGetName(void *)
 {
-	return obs_module_text("FlyingLayers.Title");
+	return fl::text("FlyingLayers.Title");
 }
 
 void *ftCreate(obs_data_t *settings, obs_source_t *source)
 {
-	auto *transition = new FlyingTransition(settings, source);
-	if (!transition->valid()) {
-		delete transition;
-		return nullptr;
-	}
-	return transition;
+	return new FlyingTransition(settings, source);
 }
 
 void ftDestroy(void *data)

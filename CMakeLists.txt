@@ -17,7 +17,15 @@ target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_17)
 
 target_sources(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE src/plugin-main.cpp src/flying-transition.cpp src/flying-transition.h src/layout.cpp src/layout.h
+  PRIVATE
+    src/effect.h
+    src/flying-transition.cpp
+    src/flying-transition.h
+    src/layout.cpp
+    src/layout.h
+    src/plugin-main.cpp
+    src/strings.cpp
+    src/strings.h
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

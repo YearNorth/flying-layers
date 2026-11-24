@@ -59,10 +59,15 @@ struct Timing {
 	bool sequenced = false;    // exits, then flights, then entries
 	float exitPortion = 1.0f;  // share of the transition used by layers going out
 	float enterPortion = 1.0f; // share used by layers coming in
+	float cascade = 0.0f;      // 0 = all together, up to 0.9 = one after the other
 };
 
 // Windows of the layers going out, flying and coming in.
 void groupWindows(const Timing &timing, Window &exit, Window &fly, Window &enter);
+
+// Window of member `index` of `count` inside a group window, with the
+// cascade delay between members.
+Window cascadeWindow(const Window &group, float cascade, int index, int count);
 
 // Progress (0..1) of transition time t inside a window.
 float localProgress(const Window &window, float t);

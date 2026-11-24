@@ -37,7 +37,7 @@ In the **Scene Transitions** dock, click **+** and choose **Flying Layers**. Set
 | Group | Options |
 | --- | --- |
 | Motion curve | Linear, ease in, ease out, ease in-out, smooth, back (starts from rest, overshoots and settles), back in-out, elastic, or a custom Bézier curve (as CSS `cubic-bezier`) |
-| Timing | **All together** or **in sequence** (layers go out, then fly, then come in). Share of the duration for layers going out and coming in |
+| Timing | **All together** or **in sequence** (layers go out, then fly, then come in). Share of the duration for layers going out and coming in. **Cascade**: the layers start one after another, in stacking order or by position on screen |
 | Coming in and going out | Fade, zoom, slide, wipe or cut, chosen separately for entries and exits. Edge for slides and wipes (nearest, left, right, top, bottom). Optional fade during zoom and slide |
 | Motion blur | Blurs layers along their movement, like a camera shutter. The shutter angle sets the amount (180° is the film look, 360° the full frame). Only real movement is blurred: wipes and crops stay sharp, and a still T-bar gives a sharp picture |
 

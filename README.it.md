@@ -37,7 +37,7 @@ Nel pannello **Transizioni di scena** clicca **+** e scegli **Flying Layers**. I
 | Gruppo | Opzioni |
 | --- | --- |
 | Curva del movimento | Lineare, ease in, ease out, ease in-out, morbida, back (parte da fermo, supera e si assesta), back in-out, elastica, oppure una curva Bézier personalizzata (come `cubic-bezier` in CSS) |
-| Tempi | **Tutto insieme** oppure **in sequenza** (prima escono i layer, poi volano, poi entrano). Parte della durata per i layer in uscita e in entrata |
+| Tempi | **Tutto insieme** oppure **in sequenza** (prima escono i layer, poi volano, poi entrano). Parte della durata per i layer in uscita e in entrata. **Cascata**: i layer partono uno dopo l'altro, nell'ordine dei layer o secondo la posizione sullo schermo |
 | Layer in entrata e in uscita | Dissolvenza, zoom, scorrimento, wipe o taglio, scelti separatamente per entrata e uscita. Bordo per scorrimento e wipe (più vicino, sinistra, destra, alto, basso). Dissolvenza opzionale durante zoom e scorrimento |
 | Motion blur | Sfoca i layer lungo il movimento, come l'otturatore di una telecamera. L'angolo dell'otturatore regola l'intensità (180° è l'aspetto cinematografico, 360° il fotogramma intero). Viene sfocato solo il movimento vero: wipe e crop restano nitidi, e con la T-bar ferma l'immagine è nitida |
 
