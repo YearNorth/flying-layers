@@ -35,8 +35,6 @@ constexpr const char *kBezierY2 = "bezier_y2";
 constexpr const char *kTimingMode = "timing_mode";
 constexpr const char *kExitPortion = "exit_portion";
 constexpr const char *kEnterPortion = "enter_portion";
-constexpr const char *kCascade = "cascade";
-constexpr const char *kCascadeOrder = "cascade_order";
 constexpr const char *kEnterEffect = "enter_effect";
 constexpr const char *kExitEffect = "exit_effect";
 constexpr const char *kSlideEdge = "slide_edge";
@@ -54,16 +52,6 @@ enum class Appear : int {
 	Wipe,
 };
 
-// Order in which layers start when the cascade is on.
-enum class CascadeOrder : int {
-	StackUp = 0, // bottom layer first
-	StackDown,   // top layer first
-	LeftToRight,
-	RightToLeft,
-	TopToBottom,
-	BottomToTop,
-};
-
 enum class Role {
 	Fly,
 	Enter,
@@ -74,7 +62,6 @@ struct Settings {
 	fl::Easing easing = fl::Easing::EaseInOut;
 	fl::Bezier bezier;
 	fl::Timing timing;
-	CascadeOrder cascadeOrder = CascadeOrder::StackUp;
 	Appear enter = Appear::Fade;
 	Appear exit = Appear::Fade;
 	fl::Edge edge = fl::Edge::Auto;
@@ -90,6 +77,7 @@ struct Settings {
 struct PlannedLayer {
 	obs_sceneitem_t *a = nullptr;
 	obs_sceneitem_t *b = nullptr;
+	gs_texrender_t *content = nullptr; // the layer's own texture, kept for the whole transition
 };
 
 // What one scene item looks like right now.
@@ -105,6 +93,7 @@ struct FrameLayer {
 	LayerState a;
 	LayerState b;
 	fl::Window window;
+	size_t plan = 0; // index in the plan
 
 	const LayerState &shown() const { return role == Role::Exit ? a : b; }
 };
@@ -194,12 +183,13 @@ float evaluate(const FrameLayer &layer, float t, const Settings &settings, float
 }
 
 // Largest distance travelled by a corner of the layer between two
-// placements, in scene pixels.
+// placements, in scene pixels. Uses the whole source, so a change of crop
+// alone (wipe) is not movement and gets no motion blur.
 float travel(const fl::Layout &from, const fl::Layout &to)
 {
 	vec2 a[4], b[4];
-	fl::layoutCorners(from, a);
-	fl::layoutCorners(to, b);
+	fl::sourceCorners(from, a);
+	fl::sourceCorners(to, b);
 	float most = 0.0f;
 	for (int i = 0; i < 4; ++i)
 		most = std::max(most, vec2_dist(&a[i], &b[i]));
@@ -235,9 +225,6 @@ public:
 	{
 		obs_enter_graphics();
 		clearPlan();
-		for (gs_texrender_t *texrender : texrenders_)
-			gs_texrender_destroy(texrender);
-		texrenders_.clear();
 		if (accumulator_)
 			gs_texrender_destroy(accumulator_);
 		if (effect_)
@@ -259,8 +246,6 @@ public:
 		s.timing.sequenced = obs_data_get_int(data, kTimingMode) == 1;
 		s.timing.exitPortion = (float)obs_data_get_int(data, kExitPortion) / 100.0f;
 		s.timing.enterPortion = (float)obs_data_get_int(data, kEnterPortion) / 100.0f;
-		s.timing.cascade = (float)obs_data_get_int(data, kCascade) / 100.0f;
-		s.cascadeOrder = (CascadeOrder)obs_data_get_int(data, kCascadeOrder);
 		s.enter = (Appear)obs_data_get_int(data, kEnterEffect);
 		s.exit = (Appear)obs_data_get_int(data, kExitEffect);
 		s.edge = (fl::Edge)obs_data_get_int(data, kSlideEdge);
@@ -316,6 +301,8 @@ private:
 		for (PlannedLayer &layer : plan_) {
 			obs_sceneitem_release(layer.a);
 			obs_sceneitem_release(layer.b);
+			if (layer.content)
+				gs_texrender_destroy(layer.content);
 		}
 		plan_.clear();
 		planA_ = nullptr;
@@ -376,69 +363,28 @@ private:
 	// Reads every layer for this frame and gives it its time window.
 	void prepareFrame(const Settings &settings)
 	{
-		frame_.clear();
-		for (const PlannedLayer &planned : plan_) {
-			FrameLayer layer;
-			const bool hasA = readLayer(planned.a, layer.a);
-			const bool hasB = readLayer(planned.b, layer.b);
-			if (hasA && hasB)
-				layer.role = Role::Fly;
-			else if (hasB)
-				layer.role = Role::Enter;
-			else if (hasA)
-				layer.role = Role::Exit;
-			else
-				continue;
-			frame_.push_back(layer);
-		}
-
 		fl::Window exit, fly, enter;
 		fl::groupWindows(settings.timing, exit, fly, enter);
 
-		for (Role role : {Role::Exit, Role::Fly, Role::Enter}) {
-			order_.clear();
-			for (size_t i = 0; i < frame_.size(); ++i)
-				if (frame_[i].role == role)
-					order_.push_back(i);
-
-			sortForCascade(settings.cascadeOrder);
-
-			const fl::Window &group = role == Role::Exit ? exit : role == Role::Fly ? fly : enter;
-			for (size_t rank = 0; rank < order_.size(); ++rank)
-				frame_[order_[rank]].window = fl::cascadeWindow(group, settings.timing.cascade,
-										(int)rank, (int)order_.size());
-		}
-	}
-
-	void sortForCascade(CascadeOrder order)
-	{
-		auto centre = [this](size_t i, bool x) {
-			const fl::Layout &l = frame_[i].shown().layout;
-			return x ? l.cx : l.cy;
-		};
-		switch (order) {
-		case CascadeOrder::StackDown:
-			std::reverse(order_.begin(), order_.end());
-			break;
-		case CascadeOrder::LeftToRight:
-			std::stable_sort(order_.begin(), order_.end(),
-					 [&](size_t p, size_t q) { return centre(p, true) < centre(q, true); });
-			break;
-		case CascadeOrder::RightToLeft:
-			std::stable_sort(order_.begin(), order_.end(),
-					 [&](size_t p, size_t q) { return centre(p, true) > centre(q, true); });
-			break;
-		case CascadeOrder::TopToBottom:
-			std::stable_sort(order_.begin(), order_.end(),
-					 [&](size_t p, size_t q) { return centre(p, false) < centre(q, false); });
-			break;
-		case CascadeOrder::BottomToTop:
-			std::stable_sort(order_.begin(), order_.end(),
-					 [&](size_t p, size_t q) { return centre(p, false) > centre(q, false); });
-			break;
-		case CascadeOrder::StackUp:
-		default:
-			break; // the plan is already bottom to top
+		frame_.clear();
+		for (size_t i = 0; i < plan_.size(); ++i) {
+			FrameLayer layer;
+			layer.plan = i;
+			const bool hasA = readLayer(plan_[i].a, layer.a);
+			const bool hasB = readLayer(plan_[i].b, layer.b);
+			if (hasA && hasB) {
+				layer.role = Role::Fly;
+				layer.window = fly;
+			} else if (hasB) {
+				layer.role = Role::Enter;
+				layer.window = enter;
+			} else if (hasA) {
+				layer.role = Role::Exit;
+				layer.window = exit;
+			} else {
+				continue;
+			}
+			frame_.push_back(layer);
 		}
 	}
 
@@ -456,7 +402,11 @@ private:
 			lastFrameTime_ = frameTime;
 			lastT_ = t;
 		}
-		return haveFrameStep_ ? frameStep_ : 0.0f;
+		if (haveFrameStep_)
+			return frameStep_;
+		// First frame of a timed transition: t is the time since the
+		// start, less than one frame, so it is a fair estimate of the step.
+		return t < 0.25f ? t : 0.0f;
 	}
 
 	// ---- Drawing ------------------------------------------------------
@@ -482,45 +432,47 @@ private:
 		gs_blend_state_push();
 		gs_reset_blend_state();
 
-		size_t textureIndex = 0;
 		for (const FrameLayer &layer : frame_) {
 			fl::Layout layout;
 			const float opacity = evaluate(layer, t, settings, canvasW, canvasH, layout);
 
-			if (shutterOpen > 0.0f &&
-			    drawBlurred(layer, t - shutterOpen, t, settings, canvasW, canvasH, textureIndex))
+			if (shutterOpen > 0.0f && drawBlurred(layer, t - shutterOpen, t, settings, canvasW, canvasH))
 				continue;
 
-			drawLayer(layer.shown(), layout, opacity, textureIndex);
+			drawLayer(layer, layout, opacity);
 		}
 
 		gs_blend_state_pop();
 	}
 
-	gs_texrender_t *texrenderAt(size_t index, gs_color_format format)
+	// Renders the whole source (the crop is applied when drawing) into the
+	// layer's own texture. The texture is as large as the layer ever
+	// appears during the transition, not larger than the source: a source
+	// shown at 20 % is rendered at 20 %. Its size stays the same for the
+	// whole transition, so it is allocated once.
+	gs_texture_t *renderContent(const FrameLayer &layer)
 	{
-		while (texrenders_.size() <= index)
-			texrenders_.push_back(nullptr);
+		const LayerState &state = layer.shown();
+		float scale = 0.0f;
+		if (layer.role != Role::Exit)
+			scale = std::max({scale, fabsf(layer.b.layout.sx), fabsf(layer.b.layout.sy)});
+		if (layer.role != Role::Enter)
+			scale = std::max({scale, fabsf(layer.a.layout.sx), fabsf(layer.a.layout.sy)});
+		scale = std::clamp(scale, 0.0f, 1.0f);
 
-		gs_texrender_t *&texrender = texrenders_[index];
+		const uint32_t w = std::max(16u, (uint32_t)ceilf(state.layout.srcW * scale));
+		const uint32_t h = std::max(16u, (uint32_t)ceilf(state.layout.srcH * scale));
+		const gs_color_space space = gs_get_color_space();
+		const gs_color_format format = gs_get_format_from_space(space);
+
+		gs_texrender_t *&texrender = plan_[layer.plan].content;
 		if (texrender && gs_texrender_get_format(texrender) != format) {
 			gs_texrender_destroy(texrender);
 			texrender = nullptr;
 		}
 		if (!texrender)
 			texrender = gs_texrender_create(format, GS_ZS_NONE);
-		return texrender;
-	}
-
-	// Renders the whole source (crop is applied when drawing) into a
-	// texture of its own size.
-	gs_texture_t *renderContent(const LayerState &state, size_t &textureIndex)
-	{
-		const uint32_t w = (uint32_t)state.layout.srcW;
-		const uint32_t h = (uint32_t)state.layout.srcH;
-		const gs_color_space space = gs_get_color_space();
-		gs_texrender_t *texrender = texrenderAt(textureIndex++, gs_get_format_from_space(space));
-		if (!texrender || !w || !h)
+		if (!texrender)
 			return nullptr;
 
 		gs_texrender_reset(texrender);
@@ -528,7 +480,7 @@ private:
 			vec4 clear;
 			vec4_zero(&clear);
 			gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
-			gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
+			gs_ortho(0.0f, state.layout.srcW, 0.0f, state.layout.srcH, -100.0f, 100.0f);
 
 			gs_blend_state_push();
 			gs_reset_blend_state();
@@ -587,11 +539,12 @@ private:
 		      layout.contentH / layout.srcH);
 	}
 
-	void drawLayer(const LayerState &state, const fl::Layout &layout, float opacity, size_t &textureIndex)
+	void drawLayer(const FrameLayer &layer, const fl::Layout &layout, float opacity)
 	{
 		if (opacity <= 0.001f || fabsf(layout.sx) < 1e-6f || fabsf(layout.sy) < 1e-6f)
 			return;
 
+		const LayerState &state = layer.shown();
 		const bool useTexture = state.nestedScene || layout.hasCrop() || opacity < 0.999f;
 		if (!useTexture) {
 			// Fast path: draw the source straight onto the output.
@@ -604,7 +557,7 @@ private:
 			return;
 		}
 
-		gs_texture_t *content = renderContent(state, textureIndex);
+		gs_texture_t *content = renderContent(layer);
 		if (!content)
 			return;
 
@@ -623,13 +576,26 @@ private:
 		gs_matrix_pop();
 	}
 
+	// Canvas-sized floating point texture where motion blur samples are
+	// summed. Allocated once; each layer only uses the area it sweeps.
+	gs_texrender_t *accumulator(uint32_t w, uint32_t h, gs_color_space space)
+	{
+		if (!accumulator_)
+			accumulator_ = gs_texrender_create(GS_RGBA16F, GS_ZS_NONE);
+		gs_texrender_reset(accumulator_);
+		if (!accumulator_ || !gs_texrender_begin_with_color_space(accumulator_, w, h, space))
+			return nullptr;
+		return accumulator_;
+	}
+
 	// Motion blur: averages the layer over the time the shutter is open
 	// (from t0 to t1), the way a camera does. The source is rendered once;
-	// only its texture is drawn several times, into a floating point
-	// texture that covers just the area swept by the layer. Returns false
-	// when the layer barely moves, so it is drawn normally.
+	// only its texture is drawn several times. Returns false when the layer
+	// does not move, so it is drawn normally. The threshold is half a
+	// pixel: below it the blurred and the sharp picture look the same, so
+	// the blur fades out instead of switching off.
 	bool drawBlurred(const FrameLayer &layer, float t0, float t1, const Settings &settings, float canvasW,
-			 float canvasH, size_t &textureIndex)
+			 float canvasH)
 	{
 		fl::Layout start, end;
 		const float opacityStart = evaluate(layer, t0, settings, canvasW, canvasH, start);
@@ -638,11 +604,11 @@ private:
 			return false;
 
 		const float distance = travel(start, end);
-		if (distance < 2.0f)
+		if (distance < 0.5f)
 			return false;
 
 		// About one sample per pixel of travel, which hides the steps.
-		const int samples = std::clamp((int)ceilf(distance), 3, 32);
+		const int samples = std::clamp((int)ceilf(distance), 2, 40);
 		samples_.clear();
 		fl::Rect area{INFINITY, INFINITY, -INFINITY, -INFINITY};
 		for (int i = 0; i < samples; ++i) {
@@ -670,32 +636,40 @@ private:
 		if (x1 <= x0 || y1 <= y0)
 			return true; // nothing visible
 
-		gs_texture_t *content = renderContent(layer.shown(), textureIndex);
+		gs_texture_t *content = renderContent(layer);
 		if (!content)
 			return true;
 
-		const uint32_t w = (uint32_t)(x1 - x0);
-		const uint32_t h = (uint32_t)(y1 - y0);
+		const uint32_t cw = (uint32_t)canvasW;
+		const uint32_t ch = (uint32_t)canvasH;
+		const float w = x1 - x0;
+		const float h = y1 - y0;
 		const gs_color_space space = gs_get_color_space();
 		const gs_color_space linearSpace = space == GS_CS_SRGB ? GS_CS_SRGB_16F : space;
 
-		if (!accumulator_)
-			accumulator_ = gs_texrender_create(GS_RGBA16F, GS_ZS_NONE);
-		gs_texrender_reset(accumulator_);
-		if (!gs_texrender_begin_with_color_space(accumulator_, w, h, linearSpace))
+		gs_texrender_t *sum = accumulator(cw, ch, linearSpace);
+		if (!sum)
 			return true;
 
-		vec4 clear;
-		vec4_zero(&clear);
-		gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
-		gs_ortho(x0, x0 + (float)w, y0, y0 + (float)h, -100.0f, 100.0f);
-
-		// Sum of the samples, each weighted 1/N, in linear light.
+		gs_ortho(0.0f, canvasW, 0.0f, canvasH, -100.0f, 100.0f);
 		gs_blend_state_push();
-		gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
 		const bool previous = gs_framebuffer_srgb_enabled();
 		gs_enable_framebuffer_srgb(false);
 
+		// Clear only the swept area: draw zeros over it.
+		gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+		gs_effect_set_texture(imageParam_, content);
+		gs_effect_set_float(opacityParam_, 0.0f);
+		setUv(0.0f, 0.0f, 1.0f, 1.0f);
+		gs_matrix_push();
+		gs_matrix_translate3f(x0, y0, 0.0f);
+		gs_matrix_scale3f(w, h, 1.0f);
+		while (gs_effect_loop(effect_, "Draw"))
+			gs_draw_sprite(content, 0, 1, 1);
+		gs_matrix_pop();
+
+		// Sum of the samples, each weighted 1/N, in linear light.
+		gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
 		for (const Sample &sample : samples_) {
 			if (sample.opacity <= 0.0f)
 				continue;
@@ -718,24 +692,25 @@ private:
 
 		gs_enable_framebuffer_srgb(previous);
 		gs_blend_state_pop();
-		gs_texrender_end(accumulator_);
+		gs_texrender_end(sum);
 
-		gs_texture_t *blurred = gs_texrender_get_texture(accumulator_);
+		gs_texture_t *blurred = gs_texrender_get_texture(sum);
 		if (!blurred)
 			return true;
 
-		// Composite the linear result over the output.
+		// Composite the swept area of the linear result over the output.
 		gs_blend_state_push();
 		gs_blend_function_separate(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA, GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 		const bool previousOut = gs_framebuffer_srgb_enabled();
 		gs_enable_framebuffer_srgb(true);
 		gs_effect_set_texture(imageParam_, blurred);
 		gs_effect_set_float(opacityParam_, 1.0f);
-		setUv(0.0f, 0.0f, 1.0f, 1.0f);
+		setUv(x0 / canvasW, y0 / canvasH, w / canvasW, h / canvasH);
 		gs_matrix_push();
 		gs_matrix_translate3f(x0, y0, 0.0f);
+		gs_matrix_scale3f(w, h, 1.0f);
 		while (gs_effect_loop(effect_, "Draw"))
-			gs_draw_sprite(blurred, 0, w, h);
+			gs_draw_sprite(blurred, 0, 1, 1);
 		gs_matrix_pop();
 		gs_enable_framebuffer_srgb(previousOut);
 		gs_blend_state_pop();
@@ -780,9 +755,7 @@ private:
 	obs_source_t *planA_ = nullptr; // identity only, not referenced
 	obs_source_t *planB_ = nullptr;
 	std::vector<FrameLayer> frame_;
-	std::vector<size_t> order_;
 	std::vector<Sample> samples_;
-	std::vector<gs_texrender_t *> texrenders_;
 	gs_texrender_t *accumulator_ = nullptr;
 	uint64_t lastFrameTime_ = 0;
 	float lastT_ = 0.0f;
@@ -824,8 +797,6 @@ bool refreshVisibility(obs_properties_t *props, obs_property_t *, obs_data_t *se
 	const bool custom = obs_data_get_int(settings, kEasing) == (int)fl::Easing::Custom;
 	for (const char *key : {kBezierX1, kBezierY1, kBezierX2, kBezierY2})
 		setVisible(props, key, custom);
-
-	setVisible(props, kCascadeOrder, obs_data_get_int(settings, kCascade) > 0);
 
 	auto uses = [settings](Appear effect) {
 		return obs_data_get_int(settings, kEnterEffect) == (int)effect ||
@@ -870,16 +841,6 @@ obs_properties_t *FlyingTransition::properties()
 	obs_property_t *enterPortion = obs_properties_add_int_slider(
 		timing, kEnterPortion, obs_module_text("FlyingLayers.EnterPortion"), 5, 100, 5);
 	obs_property_int_set_suffix(enterPortion, " %");
-	obs_property_t *cascade =
-		obs_properties_add_int_slider(timing, kCascade, obs_module_text("FlyingLayers.Cascade"), 0, 90, 5);
-	obs_property_int_set_suffix(cascade, " %");
-	addList(timing, kCascadeOrder, "FlyingLayers.CascadeOrder",
-		{{"FlyingLayers.CascadeOrder.StackUp", (int)CascadeOrder::StackUp},
-		 {"FlyingLayers.CascadeOrder.StackDown", (int)CascadeOrder::StackDown},
-		 {"FlyingLayers.CascadeOrder.LeftToRight", (int)CascadeOrder::LeftToRight},
-		 {"FlyingLayers.CascadeOrder.RightToLeft", (int)CascadeOrder::RightToLeft},
-		 {"FlyingLayers.CascadeOrder.TopToBottom", (int)CascadeOrder::TopToBottom},
-		 {"FlyingLayers.CascadeOrder.BottomToTop", (int)CascadeOrder::BottomToTop}});
 	obs_properties_add_group(props, "group_timing", obs_module_text("FlyingLayers.Group.Timing"), OBS_GROUP_NORMAL,
 				 timing);
 
@@ -906,7 +867,7 @@ obs_properties_t *FlyingTransition::properties()
 	obs_properties_add_group(props, "group_blur", obs_module_text("FlyingLayers.Group.Blur"), OBS_GROUP_NORMAL,
 				 blur);
 
-	for (const char *key : {kEasing, kCascade, kEnterEffect, kExitEffect, kMotionBlur})
+	for (const char *key : {kEasing, kEnterEffect, kExitEffect, kMotionBlur})
 		obs_property_set_modified_callback(obs_properties_get(props, key), refreshVisibility);
 
 	return props;
@@ -922,8 +883,6 @@ void FlyingTransition::defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, kTimingMode, 0);
 	obs_data_set_default_int(settings, kExitPortion, 100);
 	obs_data_set_default_int(settings, kEnterPortion, 100);
-	obs_data_set_default_int(settings, kCascade, 0);
-	obs_data_set_default_int(settings, kCascadeOrder, (int)CascadeOrder::StackUp);
 	obs_data_set_default_int(settings, kEnterEffect, (int)Appear::Fade);
 	obs_data_set_default_int(settings, kExitEffect, (int)Appear::Fade);
 	obs_data_set_default_int(settings, kSlideEdge, (int)fl::Edge::Auto);

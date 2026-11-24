@@ -226,7 +226,9 @@ float applyEasing(Easing easing, float t, const Bezier &bezier)
 	case Easing::Smooth:
 		return 0.5f - 0.5f * cosf(kPi * t);
 	case Easing::BackOut: {
-		const float u = t - 1.0f;
+		// Classic "back out" starts at almost five times the average
+		// speed, which reads as a jolt; t^2 makes it start from rest.
+		const float u = t * t - 1.0f;
 		return 1.0f + (back + 1.0f) * u * u * u + back * u * u;
 	}
 	case Easing::BackInOut: {
@@ -238,8 +240,10 @@ float applyEasing(Easing easing, float t, const Bezier &bezier)
 		const float u = 2.0f * t - 2.0f;
 		return (u * u * ((c + 1.0f) * u + c) + 2.0f) / 2.0f;
 	}
-	case Easing::ElasticOut:
-		return powf(2.0f, -10.0f * t) * sinf((t * 10.0f - 0.75f) * (2.0f * kPi / 3.0f)) + 1.0f;
+	case Easing::ElasticOut: {
+		const float u = t * t; // start from rest, as for BackOut
+		return powf(2.0f, -10.0f * u) * sinf((u * 10.0f - 0.75f) * (2.0f * kPi / 3.0f)) + 1.0f;
+	}
 	case Easing::Custom:
 		return cubicBezier(bezier, t);
 	case Easing::Linear:
@@ -273,19 +277,6 @@ void groupWindows(const Timing &timing, Window &exit, Window &fly, Window &enter
 	exit = Window{0.0f, exitPart};
 	fly = Window{exitPart, 1.0f - exitPart - enterPart};
 	enter = Window{1.0f - enterPart, enterPart};
-}
-
-Window cascadeWindow(const Window &group, float cascade, int index, int count)
-{
-	cascade = std::clamp(cascade, 0.0f, 0.9f);
-	if (count <= 1 || cascade <= 0.0f)
-		return group;
-
-	// Each member runs for (1 - cascade) of the group window; starts are
-	// spread evenly over the rest.
-	const float length = group.length * (1.0f - cascade);
-	const float step = group.length * cascade / (float)(count - 1);
-	return Window{group.start + step * (float)index, length};
 }
 
 float localProgress(const Window &window, float t)
@@ -414,6 +405,24 @@ void layoutCorners(const Layout &layout, vec2 corners[4])
 
 	const float xs[4] = {0.0f, layout.contentW, layout.contentW, 0.0f};
 	const float ys[4] = {0.0f, 0.0f, layout.contentH, layout.contentH};
+	for (int i = 0; i < 4; ++i) {
+		vec3 corner;
+		vec3_set(&corner, xs[i], ys[i], 0.0f);
+		vec3 p;
+		vec3_transform(&p, &corner, &m);
+		vec2_set(&corners[i], p.x, p.y);
+	}
+}
+
+void sourceCorners(const Layout &layout, vec2 corners[4])
+{
+	matrix4 m;
+	layoutMatrix(layout, m);
+
+	const float x0 = -layout.cropL, x1 = layout.srcW - layout.cropL;
+	const float y0 = -layout.cropT, y1 = layout.srcH - layout.cropT;
+	const float xs[4] = {x0, x1, x1, x0};
+	const float ys[4] = {y0, y0, y1, y1};
 	for (int i = 0; i < 4; ++i) {
 		vec3 corner;
 		vec3_set(&corner, xs[i], ys[i], 0.0f);

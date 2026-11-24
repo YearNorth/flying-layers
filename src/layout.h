@@ -28,10 +28,10 @@ enum class Easing : int {
 	EaseOut,
 	EaseInOut,
 	Smooth,
-	BackOut,   // overshoots the destination a little, then settles
-	BackInOut, // pulls back a little, overshoots, then settles
-	ElasticOut,
-	Custom, // cubic Bezier, as CSS cubic-bezier(x1, y1, x2, y2)
+	BackOut,    // soft start, overshoots the destination a little, then settles
+	BackInOut,  // pulls back a little, overshoots, then settles
+	ElasticOut, // soft start, then springs around the destination
+	Custom,     // cubic Bezier, as CSS cubic-bezier(x1, y1, x2, y2)
 };
 
 // Control points of a custom curve. x1 and x2 are kept within 0..1.
@@ -59,15 +59,10 @@ struct Timing {
 	bool sequenced = false;    // exits, then flights, then entries
 	float exitPortion = 1.0f;  // share of the transition used by layers going out
 	float enterPortion = 1.0f; // share used by layers coming in
-	float cascade = 0.0f;      // 0 = all together, up to 0.9 = one after the other
 };
 
 // Windows of the layers going out, flying and coming in.
 void groupWindows(const Timing &timing, Window &exit, Window &fly, Window &enter);
-
-// Window of member `index` of `count` inside a group window, with the
-// cascade delay between members.
-Window cascadeWindow(const Window &group, float cascade, int index, int count);
 
 // Progress (0..1) of transition time t inside a window.
 float localProgress(const Window &window, float t);
@@ -115,6 +110,10 @@ Rect layoutBounds(const Layout &layout);
 
 // Corners of the layer on screen.
 void layoutCorners(const Layout &layout, vec2 corners[4]);
+
+// Corners of the whole source (crop ignored) on screen. They move when the
+// layer moves, scales or turns, but not when only its crop changes (wipe).
+void sourceCorners(const Layout &layout, vec2 corners[4]);
 
 enum class Edge : int {
 	Auto = 0, // nearest edge of the canvas
