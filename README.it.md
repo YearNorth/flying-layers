@@ -53,7 +53,7 @@ Come vengono abbinati i layer:
 
 ## Compilare dai sorgenti
 
-A ogni push GitHub Actions compila il plugin per macOS e Windows. Il push di un tag di versione (per esempio `1.0.0`) crea una release in bozza con i pacchetti allegati.
+I pacchetti delle release li compila e controlla il manutentore, poi li pubblica in [Releases](https://github.com/YearNorth/flying-layers/releases) con i checksum SHA-256. Il repository non ha build automatiche.
 
 Per compilare in locale serve l'ambiente di [obs-plugintemplate](https://github.com/obsproject/obs-plugintemplate): Xcode 16 o successivo su macOS, Visual Studio 2022 su Windows. Le dipendenze vengono scaricate automaticamente.
 

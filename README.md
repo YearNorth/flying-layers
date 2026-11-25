@@ -53,7 +53,7 @@ How layers are matched:
 
 ## Build from source
 
-Every push builds the plugin for macOS and Windows with GitHub Actions. Pushing a version tag (for example `1.0.0`) creates a draft release with the packages attached.
+The release packages are built and signed off by the maintainer, then published on [Releases](https://github.com/YearNorth/flying-layers/releases) with their SHA-256 checksums. The repository has no CI builds.
 
 To build locally you need the [obs-plugintemplate](https://github.com/obsproject/obs-plugintemplate) toolchain: Xcode 16 or later on macOS, Visual Studio 2022 on Windows. Dependencies are downloaded automatically.
 
