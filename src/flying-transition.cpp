@@ -415,8 +415,17 @@ private:
 	// ---- Timing -------------------------------------------------------
 
 	// Reads every layer for this frame and gives it its time window.
-	void prepareFrame(const Settings &settings, const Frame &view)
+	void prepareFrame(const Settings &settings, const Frame &view, obs_source_t *sourceA, obs_source_t *sourceB)
 	{
+		// Where OBS puts each scene in the frame: a scene of another size
+		// (smaller, larger or wider than the transition) is scaled and
+		// aligned like a single source, and its layers go with it.
+		fl::Layout fitA, fitB;
+		const bool fitsA = sourceA && fl::fitLayout(obs_source_get_width(sourceA), obs_source_get_height(sourceA),
+							    view.width, view.height, view.scaleType, view.alignment, fitA);
+		const bool fitsB = sourceB && fl::fitLayout(obs_source_get_width(sourceB), obs_source_get_height(sourceB),
+							    view.width, view.height, view.scaleType, view.alignment, fitB);
+
 		frame_.clear();
 		for (size_t i = 0; i < plan_.size(); ++i) {
 			FrameLayer layer;
@@ -426,6 +435,10 @@ private:
 							 : readLayer(planned.a, layer.a);
 			const bool hasB = planned.wholeB ? readWholeSource(planned.wholeB, view, layer.b)
 							 : readLayer(planned.b, layer.b);
+			if (hasA && planned.a && fitsA)
+				fl::placeInFrame(layer.a.layout, fitA);
+			if (hasB && planned.b && fitsB)
+				fl::placeInFrame(layer.b.layout, fitB);
 			if (hasA && hasB)
 				layer.role = Role::Fly;
 			else if (hasB)
@@ -545,7 +558,7 @@ private:
 		const float canvasH = view.height;
 		const float shutterOpen = settings.motionBlur ? frameStep(t) * settings.shutter : 0.0f;
 
-		prepareFrame(settings, view);
+		prepareFrame(settings, view, sourceA, sourceB);
 
 		gs_blend_state_push();
 		gs_reset_blend_state();

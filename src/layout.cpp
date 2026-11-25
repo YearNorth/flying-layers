@@ -402,6 +402,16 @@ bool fitLayout(uint32_t srcW, uint32_t srcH, float trW, float trH, obs_transitio
 	return true;
 }
 
+void placeInFrame(Layout &layer, const Layout &fit)
+{
+	const float originX = fit.cx - fit.srcW * fit.sx * 0.5f;
+	const float originY = fit.cy - fit.srcH * fit.sy * 0.5f;
+	layer.cx = originX + layer.cx * fit.sx;
+	layer.cy = originY + layer.cy * fit.sy;
+	layer.sx *= fit.sx;
+	layer.sy *= fit.sy;
+}
+
 Layout interpolate(const Layout &a, const Layout &b, float k)
 {
 	if (k == 0.0f)

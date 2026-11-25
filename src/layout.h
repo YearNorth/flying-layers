@@ -102,6 +102,12 @@ bool computeLayout(const obs_transform_info &info, const obs_sceneitem_crop &cro
 bool fitLayout(uint32_t srcW, uint32_t srcH, float trW, float trH, obs_transition_scale_type scaleType,
 	       uint32_t alignment, Layout &out);
 
+// Moves a layer of a scene into the frame of a transition, where `fit` is
+// the placement fitLayout() gives to the whole scene. A scene the size of the
+// frame is left as it is. With a stretched scene, a rotated layer keeps its
+// shape (OBS would skew it).
+void placeInFrame(Layout &layer, const Layout &fit);
+
 // Interpolates two placements. Rotation takes the shortest way round. k can
 // go a little outside 0..1 (overshooting curves): crop stays within the
 // source and scale does not change sign unless the two placements differ in
