@@ -383,6 +383,14 @@ private:
 
 		const std::vector<fl::Pair> order = fl::planLayers(keys(itemsA, sourceA), keys(itemsB, sourceB));
 
+		// Until the layers are halfway through their flight they are drawn
+		// in the order of scene A, then in the order of B: the first frame
+		// is scene A and the last one scene B, stacking included.
+		const std::vector<int> orderA = fl::orderOfA(order);
+		rankA_.assign(order.size(), 0);
+		for (size_t rank = 0; rank < orderA.size(); ++rank)
+			rankA_[(size_t)orderA[rank]] = rank;
+
 		plan_.reserve(order.size());
 		for (const fl::Pair &pair : order) {
 			PlannedLayer layer;
@@ -563,7 +571,18 @@ private:
 		gs_blend_state_push();
 		gs_reset_blend_state();
 
-		for (const FrameLayer &layer : frame_) {
+		fl::Window exitWindow, flyWindow, enterWindow;
+		fl::groupWindows(settings.timing, exitWindow, flyWindow, enterWindow);
+		drawOrder_.resize(frame_.size());
+		for (size_t i = 0; i < frame_.size(); ++i)
+			drawOrder_[i] = i;
+		if (t < flyWindow.start + flyWindow.length * 0.5f)
+			std::sort(drawOrder_.begin(), drawOrder_.end(), [this](size_t x, size_t y) {
+				return rankA_[frame_[x].plan] < rankA_[frame_[y].plan];
+			});
+
+		for (size_t index : drawOrder_) {
+			const FrameLayer &layer = frame_[index];
 			fl::Layout layout;
 			const float opacity = evaluate(layer, t, settings, canvasW, canvasH, layout);
 
@@ -871,6 +890,8 @@ private:
 	obs_source_t *planB_ = nullptr;
 	std::vector<FrameLayer> frame_;
 	std::vector<size_t> order_;
+	std::vector<size_t> rankA_;     // per plan entry: its place in the order of scene A
+	std::vector<size_t> drawOrder_; // indices in frame_, bottom to top
 	std::vector<Sample> samples_;
 	gs_texrender_t *accumulator_ = nullptr;
 	uint64_t lastFrameTime_ = 0;

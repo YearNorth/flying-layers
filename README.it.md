@@ -46,7 +46,7 @@ Funziona ovunque funzionino le transizioni di OBS: cambio scena diretto, Studio 
 Come vengono abbinati i layer:
 
 - due layer sono lo stesso layer se mostrano la stessa sorgente. Se una sorgente compare più volte in una scena, la prima copia si abbina alla prima, la seconda alla seconda, e così via;
-- durante il volo i layer seguono l'ordine della scena di destinazione. I layer in uscita restano subito sopra il layer che avevano sotto;
+- i layer sono sovrapposti come nella prima scena fino a metà del volo, poi come nella seconda: il primo fotogramma è la prima scena e l'ultimo la seconda. I layer in uscita e in entrata restano subito sopra il layer che hanno sotto nella loro scena;
 - una sorgente che non è una scena (una camera, una sorgente NDI o di cattura, una sorgente inviata da un altro plugin) vale come una scena con un solo layer, posizionato come lo mostra OBS. Una camera a schermo intero può volare dentro un picture-in-picture e tornare indietro; due sorgenti singole diverse escono ed entrano con gli effetti scelti;
 - gruppi e scene annidate volano come un unico blocco;
 - i layer nascosti non partecipano.

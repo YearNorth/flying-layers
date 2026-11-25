@@ -641,4 +641,27 @@ std::vector<Pair> planLayers(const std::vector<const char *> &a, const std::vect
 	return order;
 }
 
+std::vector<int> orderOfA(const std::vector<Pair> &plan)
+{
+	std::vector<int> order;
+	order.reserve(plan.size());
+	for (size_t p = 0; p < plan.size(); ++p)
+		if (plan[p].a >= 0)
+			order.push_back((int)p);
+	std::stable_sort(order.begin(), order.end(), [&](int x, int y) { return plan[(size_t)x].a < plan[(size_t)y].a; });
+
+	// Layers entering the scene go right above the layer that is below
+	// them in B, the way leaving layers do in the order of B.
+	int anchor = -1;
+	for (size_t p = 0; p < plan.size(); ++p) {
+		if (plan[p].a >= 0) {
+			anchor = (int)(std::find(order.begin(), order.end(), (int)p) - order.begin());
+			continue;
+		}
+		order.insert(order.begin() + (anchor + 1), (int)p);
+		++anchor;
+	}
+	return order;
+}
+
 } // namespace fl

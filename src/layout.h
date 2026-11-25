@@ -166,4 +166,9 @@ struct Pair {
 // layers below them in A.
 std::vector<Pair> planLayers(const std::vector<const char *> &a, const std::vector<const char *> &b);
 
+// The same layers in the draw order of scene A, bottom to top, as indices in
+// `plan` (the result of planLayers()). Layers only in B go right above the
+// layer that is below them in B (or at the bottom when there is none).
+std::vector<int> orderOfA(const std::vector<Pair> &plan);
+
 } // namespace fl
